@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+</head>
+<body>
+    <p>hola</p>
+    
+    <button onclick="pedirPermiso()">Activar notificaciones</button>
+    <pre id="output" style="white-space: pre-wrap;"></pre>
+
+    <script>
+    function urlBase64ToUint8Array(base64String) {
+      const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+      const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+
+      const rawData = atob(base64);
+      const outputArray = new Uint8Array(rawData.length);
+      for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+      return outputArray;
+    }
+
+    function getCurrentPosition(options) {
+      return new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, options);
+      });
+    }
+
+    function render(value) {
+      const el = document.getElementById("output");
+      if (el) el.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    }
+
+    async function waitForServiceWorkerActivation(registration) {
+      if (registration.active) return;
+
+      const sw = registration.installing || registration.waiting;
+      if (!sw) return;
+
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          sw.removeEventListener("statechange", onStateChange);
+          reject(new Error("Timeout activando el Service Worker"));
+        }, 8000);
+
+        const onStateChange = () => {
+          if (sw.state === "activated") {
+            clearTimeout(timeout);
+            sw.removeEventListener("statechange", onStateChange);
+            resolve();
+          }
+        };
+
+        if (sw.state === "activated") {
+          clearTimeout(timeout);
+          resolve();
+          return;
+        }
+
+        sw.addEventListener("statechange", onStateChange);
+      });
+    }
+
+    async function pedirPermiso(){
+      try {
+        if (!("Notification" in window)) throw new Error("Este navegador no soporta notificaciones.");
+        if (!("serviceWorker" in navigator)) throw new Error("Este navegador no soporta Service Workers.");
+        if (!("PushManager" in window)) throw new Error("Este navegador no soporta Web Push (PushManager).");
+
+        const permission = await Notification.requestPermission();
+        if (permission !== "granted") {
+          render("Permiso de notificaciones no concedido.");
+          return;
+        }
+
+        const registration = await navigator.serviceWorker.register("./sw.js");
+        await waitForServiceWorkerActivation(registration);
+
+        let subscription = await registration.pushManager.getSubscription();
+        if (!subscription) {
+          const vapidPublicKey = "BBp9F2I-G7qA5SCXDeQVAGqlxbXNiJS2ArkYZGGekppjAGhaIeF2scabmmzmWyd0pVGDowgnpPWhqF7TJ2GGVRA";
+          if (!vapidPublicKey || vapidPublicKey === "TU_VAPID_PUBLIC_KEY") {
+            throw new Error("Reemplaza TU_VAPID_PUBLIC_KEY por tu VAPID public key (base64 url-safe).");
+          }
+
+          let applicationServerKey;
+          try {
+            applicationServerKey = urlBase64ToUint8Array(vapidPublicKey);
+          } catch {
+            throw new Error("VAPID public key invalida (no es base64/base64url valida).");
+          }
+
+          if (applicationServerKey.byteLength !== 65) {
+            throw new Error(
+              `VAPID public key invalida (se esperaban 65 bytes, se obtuvieron ${applicationServerKey.byteLength}).`
+            );
+          }
+
+          subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey,
+          });
+        }
+
+        const data = {
+          endpoint: subscription.endpoint,
+          keys: subscription.toJSON().keys,
+        };
+
+        if ("geolocation" in navigator) {
+          try {
+            const position = await getCurrentPosition();
+            data.lat = position.coords.latitude;
+            data.lon = position.coords.longitude;
+          } catch (geoErr) {
+            data.geo_error = geoErr?.message || String(geoErr);
+          }
+        } else {
+          data.geo_error = "Geolocalización no soportada en este navegador.";
+        }
+
+        console.log("IDENTIFICADOR DEL USUARIO:");
+        console.log(data);
+        render(data);
+      } catch (err) {
+        console.error(err);
+        render(err?.message || String(err));
+      }
+
+    }
+    </script>
+    <script type="module" src="script.js"></script>
+</body>
+</html>
